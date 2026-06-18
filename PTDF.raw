@@ -1,0 +1,7 @@
+# Rows: [Line_1-2, Line_2-3, Line_1-3]
+# Cols: [Bus 1,    Bus 2,    Bus 3]
+ptdf_matrix = np.array([
+    [ 0.6, -0.4,  0.0],  # Line_1-2 sensitivities
+    [ 0.4,  0.6,  0.0],  # Line_2-3 sensitivities
+    [ 0.4,  0.4,  0.0]   # Line_1-3 sensitivities
+])

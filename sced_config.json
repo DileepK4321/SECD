@@ -1,0 +1,13 @@
+{
+  "system_load": 250,
+  "generators": [
+    { "id": 1, "bus": 1, "a": 0.05, "b": 10, "p_min": 10, "p_max": 100 },
+    { "id": 2, "bus": 2, "a": 0.08, "b": 5,  "p_min": 20, "p_max": 150 },
+    { "id": 3, "bus": 3, "a": 0.03, "b": 15, "p_min": 50, "p_max": 200 }
+  ],
+  "transmission_lines": [
+    { "id": "Line_1-2", "normal_limit": 100, "emergency_limit": 130 },
+    { "id": "Line_2-3", "normal_limit": 50,  "emergency_limit": 75 },
+    { "id": "Line_1-3", "normal_limit": 80,  "emergency_limit": 110 }
+  ]
+}
