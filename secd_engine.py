@@ -61,10 +61,11 @@ def optimize_sced_network(generators, initial_dispatch, ptdf_matrix, config):
     normal_limits = [line["normal_limit"] for line in config["transmission_lines"]]
     
     # --- START YOUR LOGIC HERE ---
+    line_2_3_limit = config["transmission_lines"][1]["normal_limit"]
     # 1. Calculate current line flows using: calculate_line_flows(dispatch, ptdf_matrix)
     calculated_flows = calculate_line_flows(dispatch, ptdf_matrix)
     # 2. Check if Line_2-3 (Index 1 in your matrix) exceeds its normal_limit (50 MW)
-    while abs(calculated_flows[1]) > 50:
+    while abs(calculated_flows[1]) > line_2_3_limit:
         dispatch[2] -=1.0
         dispatch[3] +=1.0
         calculated_flows = calculate_line_flows(dispatch, ptdf_matrix)
@@ -80,6 +81,123 @@ def optimize_sced_network(generators, initial_dispatch, ptdf_matrix, config):
     # --- END YOUR LOGIC HERE ---
     
     return dispatch
+
+def run_n_1_contingency_analysis(current_flows, config):
+    """
+    Simulates N-1 line outages and automatically flags limit violations.
+    """
+    print("\n==================================================")
+    print("   RUNNING AUTOMATED N-1 CONTINGENCY SECURITY SCAN")
+    print("==================================================")
+    
+    limits = {
+        0: {"name": "Line_1-2", "normal": config["transmission_lines"][0]["normal_limit"], "emergency": config["transmission_lines"][0]["emergency_limit"]},
+        1: {"name": "Line_2-3", "normal": config["transmission_lines"][1]["normal_limit"], "emergency": config["transmission_lines"][1]["emergency_limit"]},
+        2: {"name": "Line_1-3", "normal": config["transmission_lines"][2]["normal_limit"], "emergency": config["transmission_lines"][2]["emergency_limit"]}
+    }
+    
+    f12, f23, f13 = current_flows[0], current_flows[1], current_flows[2]
+    system_secure = True  # Flag to track overall grid security status
+    
+    # --- CONTINGENCY 1: LINE 1-2 TRIPS ---
+    print("\nSimulating Outage of: Line_1-2...")
+    post_f23 = abs(f23 - f12)
+    post_f13 = abs(f13 + f12)
+    
+    if post_f23 > limits[1]["emergency"] or post_f13 > limits[2]["emergency"]:
+        print("   SYSTEM ALERT: EMERGENCY LIMIT VIOLATION DETECTED!")
+        system_secure = False
+    elif post_f23 > limits[1]["normal"] or post_f13 > limits[2]["normal"]:
+        print("   WARNING: Normal limit exceeded, but within Emergency buffer.")
+    else:
+        print("  Secure: Remaining lines can comfortably handle the shift.")
+
+    # --- CONTINGENCY 2: LINE 2-3 TRIPS ---
+    print("\nSimulating Outage of: Line_2-3...")
+    post_f12 = abs(f12 - f23)
+    post_f13 = abs(f13 + f23)
+    
+    if post_f12 > limits[0]["emergency"] or post_f13 > limits[2]["emergency"]:
+        print("   SYSTEM ALERT: EMERGENCY LIMIT VIOLATION DETECTED!")
+        system_secure = False
+    elif post_f12 > limits[0]["normal"] or post_f13 > limits[2]["normal"]:
+        print("   WARNING: Normal limit exceeded, but within Emergency buffer.")
+    else:
+        print("   Secure: Remaining lines can comfortably handle the shift.")
+        
+    # --- CONTINGENCY 3: LINE 1-3 TRIPS ---
+    print("\nSimulating Outage of: Line_1-3...")
+    post_f12 = abs(f12 + f13)
+    post_f23 = abs(f23 + f13)
+    
+    if post_f12 > limits[0]["emergency"] or post_f23 > limits[1]["emergency"]:
+        print("   SYSTEM ALERT: EMERGENCY LIMIT VIOLATION DETECTED!")
+        system_secure = False
+    elif post_f12 > limits[0]["normal"] or post_f23 > limits[1]["normal"]:
+        print("   WARNING: Normal limit exceeded, but within Emergency buffer.")
+    else:
+        print("   Secure: Remaining lines can comfortably handle the shift.")
+
+    # Final summary readout
+    print("\n================================================== ")
+    if system_secure:
+        print("  GRID STATUS: N-1 SECURE ")
+    else:
+        print("  GRID STATUS: N-1 INSECURE  (Mitigation Required)")
+    print("==================================================")
+    
+    return system_secure
+
+def optimize_preventative_sced(generators, initial_dispatch, ptdf_matrix, config):
+    """
+    Proactively shifts generation to ensure the grid is safe even IF a line trips.
+    """
+    dispatch = initial_dispatch.copy()
+    
+    # 1. Calculate the base line flows for our current dispatch
+    current_flows = calculate_line_flows(dispatch, ptdf_matrix)
+    
+    # 2. Extract the emergency limit for Line 2-3 (which is index 1)
+    line_2_3_emergency_limit = config["transmission_lines"][1]["emergency_limit"] # 75 MW
+    
+    # Simulate the contingency flow upfront: post-contingency flow = Line 2-3 flow + Line 1-3 flow
+    post_contingency_flow = abs(current_flows[1] + current_flows[2])
+    
+    # 3. Keep shifting generation as long as the N-1 contingency violates the emergency limit
+    while post_contingency_flow > line_2_3_emergency_limit:
+        
+        # Proactively shift power: Reduce Gen 1 (reduces line stress), pick up slack on Gen 3
+        dispatch[1] -= 1.0
+        dispatch[3] += 1.0
+        
+        # Recalculate base flows with the adjusted dispatch
+        current_flows = calculate_line_flows(dispatch, ptdf_matrix)
+        
+        # Recalculate what the emergency flow would be if Line 1-3 tripped right now
+        post_contingency_flow = abs(current_flows[1] + current_flows[2])
+        
+    return dispatch
+
+def calculate_locational_prices(base_lambda, shadow_price, ptdf_matrix):
+    """
+    Calculates LMPs for all buses based on marginal energy and congestion costs.
+    """
+    # The baseline energy cost is identical at all buses
+    energy_component = base_lambda
+    
+    # Extract the PTDF row for the bottleneck line (Line_2-3 is index 1)
+    # Row 1 contains the impacts for Bus 1, Bus 2, and Bus 3
+    line_2_3_ptdfs = ptdf_matrix[1] # [0.4, 0.6, 0.0]
+    
+    lmps = {}
+    
+    # Calculate LMP for each Bus (1, 2, and 3)
+    # Formula: LMP = Energy_Component - (PTDF * Shadow_Price)
+    lmps[1] = energy_component - (line_2_3_ptdfs[0] * shadow_price)
+    lmps[2] = energy_component - (line_2_3_ptdfs[1] * shadow_price)
+    lmps[3] = energy_component - (line_2_3_ptdfs[2] * shadow_price)
+    
+    return lmps
 
 if __name__ == "__main__":
     config = load_market_data()
@@ -129,3 +247,33 @@ if __name__ == "__main__":
         status = "OK" if abs(flow) <= limit else "⚠️ OVERLOADED"
         print(f"  {name}: Flow = {flow:.2f} MW | Limit = {limit} MW [{status}]")
     
+    #run contingency analysis
+    run_n_1_contingency_analysis(final_line_flow,config)
+
+    # 4. Run the preventative re-dispatch optimization
+    final_preventative_dispatch = optimize_preventative_sced(generators, final_dispatch, ptdf_matrix, config)
+    
+    # 5. Calculate the new secure line flows
+    secure_line_flows = calculate_line_flows(final_preventative_dispatch, ptdf_matrix)
+    
+    print("\n==================================================")
+    print("   STAGE 4: PREVENTATIVE RE-DISPATCH COMPLETED")
+    print("==================================================")
+    print("New Proactive Secure Dispatches:")
+    for gen_id, mw in final_preventative_dispatch.items():
+        print(f"  Generator {gen_id}: {mw:.2f} MW")
+        
+    # 6. Re-run the security scan to verify the grid is 100% secure now!
+    run_n_1_contingency_analysis(secure_line_flows, config)
+
+    # 7. Calculate and display Locational Marginal Prices (LMPs)
+    shadow_price = 33.33  # Calculated from our generator cost divergence
+    bus_prices = calculate_locational_prices(base_lambda, shadow_price, ptdf_matrix)
+    
+    print("\n==================================================")
+    print("   STAGE 5: LOCATIONAL MARGINAL PRICING (LMP)     ")
+    print("==================================================")
+    print("Real-Time Locational Electricity Prices:")
+    for bus_id, price in bus_prices.items():
+        print(f"  Bus {bus_id} LMP: ${price:.2f} / MWh")
+    print("==================================================")
